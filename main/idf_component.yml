@@ -1,0 +1,5 @@
+dependencies:
+  # Pulls in the LAN87xx PHY driver (espressif/lan87xx) on IDF 6.x when CONFIG_ETHERNET_PHY_LAN87XX=y.
+  # Note: ethernet_init does not support ESP-IDF 5.5.0 / 5.5.1.
+  espressif/ethernet_init:
+    version: "^1.4.1"

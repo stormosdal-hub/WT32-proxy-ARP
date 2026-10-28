@@ -1,0 +1,4 @@
+
+netsh interface ipv4 set address name="WiFi" static 192.168.8.100 255.255.255.0
+
+netsh interface ipv4 set address name="WiFi" dhcp

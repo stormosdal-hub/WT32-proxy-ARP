@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WT32 PLC Bridge</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #1c1f24; --muted: #646b75; --line: #e1e4e8;
+    --accent: #0b6bcb; --ok: #1a7f37; --warn: #9a6700; --bad: #c62828; --field: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --card: #1a1e24; --text: #e6e8eb; --muted: #9aa3ad; --line: #2c323a;
+      --accent: #4c9be8; --ok: #3fb950; --warn: #d29922; --bad: #f47067; --field: #0f1216;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 4px 0 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  label.inline { display: flex; align-items: center; gap: 8px; font-weight: 400; margin-top: 8px; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--field); color: var(--text); font: inherit;
+  }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; align-items: center; }
+  button { font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 6px; border: 1px solid var(--accent);
+           background: var(--accent); color: #fff; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  progress { width: 100%; height: 8px; margin-top: 12px; }
+  .msg { margin-top: 12px; font-size: 14px; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+  #offline { display: none; background: var(--bad); color: #fff; padding: 8px 12px; border-radius: 8px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>WT32 PLC Bridge</h1>
+    <span class="muted" id="fw"></span>
+  </header>
+  <div id="offline">Bridge not reachable. It may be restarting; this page reconnects automatically.</div>
+
+  <section>
+    <h2>Status</h2>
+    <dl>
+      <dt>Ethernet</dt><dd id="s-eth">…</dd>
+      <dt>Wi-Fi</dt><dd id="s-wifi">…</dd>
+      <dt>PLC</dt><dd id="s-plc">…</dd>
+      <dt>Traffic</dt><dd id="s-traffic">…</dd>
+      <dt>Reconnects</dt><dd id="s-reconnects">…</dd>
+      <dt>Uptime</dt><dd id="s-uptime">…</dd>
+      <dt>Last reset</dt><dd id="s-reset">…</dd>
+      <dt>Free memory</dt><dd id="s-heap">…</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <form id="cfg">
+      <label for="ssid">Wi-Fi network</label>
+      <input type="text" id="ssid" name="ssid" maxlength="32" required autocomplete="off">
+      <div class="hint">Existing 2.4 GHz network. The PLC joins it under its own MAC address.</div>
+
+      <label for="password">Wi-Fi password</label>
+      <input type="password" id="password" name="password" maxlength="63" placeholder="unchanged" autocomplete="new-password">
+      <label class="inline"><input type="checkbox" id="open" name="open" value="1"> Open network (no password)</label>
+
+      <label for="plc_ip">PLC IP address</label>
+      <input type="text" id="plc_ip" name="plc_ip" maxlength="15" placeholder="learn automatically" inputmode="decimal" autocomplete="off">
+      <div class="hint">The PLC's own static address, in the Wi-Fi network's subnet.</div>
+
+      <label for="setup_password">Setup access point password</label>
+      <input type="password" id="setup_password" name="setup_password" maxlength="63" placeholder="unchanged" autocomplete="new-password">
+      <div class="hint">For <span id="setup-ssid">this setup network</span>. 8–63 characters.</div>
+
+      <div class="row">
+        <button type="submit" id="save">Save and restart</button>
+      </div>
+      <div class="msg" id="cfg-msg"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Firmware update</h2>
+    <p class="muted" id="fw-detail" style="margin-top:0"></p>
+    <input type="file" id="fw-file" accept=".bin">
+    <div class="hint">Select <code>build/wt32_eth2ap.bin</code>. If the new firmware can't reach Wi-Fi or this page, the bridge returns to the current version on its next restart.</div>
+    <div class="row">
+      <button type="button" id="upload" disabled>Upload and restart</button>
+      <button type="button" class="secondary" id="restart">Restart bridge</button>
+    </div>
+    <progress id="fw-progress" max="100" value="0" hidden></progress>
+    <div class="msg" id="fw-msg"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function setText(id, text, state) {
+  const el = $(id);
+  el.textContent = '';
+  if (state !== undefined) {
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + state;
+    el.appendChild(dot);
+  }
+  el.appendChild(document.createTextNode(text));
+}
+
+function duration(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + ' d ' : '') + (d || h ? h + ' h ' : '') + m + ' min';
+}
+
+function signal(rssi) {
+  return rssi >= -60 ? 'excellent' : rssi >= -67 ? 'good' : rssi >= -75 ? 'fair' : 'weak';
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/status', { cache: 'no-store' });
+    const s = await r.json();
+    $('offline').style.display = 'none';
+    $('fw').textContent = 'v' + s.firmware.version;
+    $('fw-detail').textContent = 'Running ' + s.firmware.version + ' (built ' + s.firmware.built +
+      ', ESP-IDF ' + s.firmware.idf + ') from ' + s.firmware.partition + '.';
+    setText('s-eth', s.ethernet.link ? 'Link up' : 'Link down', s.ethernet.link ? 'ok' : 'bad');
+    if (s.wifi.connected) {
+      setText('s-wifi', s.wifi.ssid + ' · ' + s.wifi.rssi + ' dBm (' + signal(s.wifi.rssi) + ') · channel ' + s.wifi.channel,
+              s.wifi.rssi >= -75 ? 'ok' : 'warn');
+    } else {
+      setText('s-wifi', 'Not connected to ' + (s.wifi.ssid || '(no network set)'), 'bad');
+    }
+    if (s.plc.mac) {
+      setText('s-plc', s.plc.mac + (s.plc.ip ? ' · ' + s.plc.ip : '') + (s.plc.seen ? '' : ' · not seen since link-up'),
+              s.plc.seen ? 'ok' : 'warn');
+    } else {
+      setText('s-plc', 'Not found yet' + (s.plc.ip ? ' (looking for ' + s.plc.ip + ')' : ''), 'warn');
+    }
+    const c = s.counters;
+    const fails = c.eth2wifi_queue_full + c.eth2wifi_tx_fail + c.wifi2eth_tx_fail;
+    setText('s-traffic', 'PLC → Wi-Fi ' + c.eth2wifi.toLocaleString() + ' · Wi-Fi → PLC ' + c.wifi2eth.toLocaleString() +
+            ' frames · ' + fails + ' dropped', fails ? 'warn' : 'ok');
+    setText('s-reconnects', String(c.reconnects));
+    setText('s-uptime', duration(s.uptime_s));
+    setText('s-reset', s.reset_reason);
+    setText('s-heap', Math.round(s.free_heap / 1024) + ' KB (lowest ' + Math.round(s.min_free_heap / 1024) + ' KB)');
+  } catch (e) {
+    $('offline').style.display = 'block';
+  }
+}
+
+async function loadConfig() {
+  try {
+    const c = await (await fetch('/api/config', { cache: 'no-store' })).json();
+    $('ssid').value = c.ssid;
+    $('open').checked = c.open;
+    $('password').disabled = c.open;
+    $('plc_ip').value = c.plc_ip;
+    $('setup-ssid').textContent = '"' + c.setup_ssid + '"';
+  } catch (e) { /* refresh() shows the offline banner */ }
+}
+
+function message(id, text, ok) {
+  $(id).textContent = text;
+  $(id).className = 'msg ' + (ok ? 'ok' : 'bad');
+}
+
+$('open').addEventListener('change', () => { $('password').disabled = $('open').checked; });
+
+$('cfg').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  $('save').disabled = true;
+  try {
+    const body = new URLSearchParams(new FormData($('cfg')));
+    const r = await (await fetch('/api/config', { method: 'POST', body })).json();
+    if (r.ok) {
+      message('cfg-msg', 'Saved. The bridge is restarting with the new settings (about 5 s).', true);
+    } else {
+      message('cfg-msg', r.error, false);
+    }
+  } catch (e) {
+    message('cfg-msg', 'Could not reach the bridge.', false);
+  }
+  $('save').disabled = false;
+});
+
+$('fw-file').addEventListener('change', () => { $('upload').disabled = !$('fw-file').files.length; });
+
+$('upload').addEventListener('click', () => {
+  const file = $('fw-file').files[0];
+  if (!file) return;
+  $('upload').disabled = true;
+  $('fw-progress').hidden = false;
+  message('fw-msg', 'Uploading…', true);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/ota');
+  xhr.upload.onprogress = e => { if (e.lengthComputable) $('fw-progress').value = 100 * e.loaded / e.total; };
+  xhr.onload = () => {
+    let r = {};
+    try { r = JSON.parse(xhr.responseText); } catch (e) { r = { ok: false, error: 'Unexpected response' }; }
+    if (r.ok) {
+      message('fw-msg', 'Firmware written. The bridge is restarting into it.', true);
+    } else {
+      message('fw-msg', r.error, false);
+      $('upload').disabled = false;
+    }
+  };
+  xhr.onerror = () => { message('fw-msg', 'Upload failed: connection lost.', false); $('upload').disabled = false; };
+  xhr.send(file);
+});
+
+$('restart').addEventListener('click', async () => {
+  try { await fetch('/api/restart', { method: 'POST' }); } catch (e) { }
+  message('fw-msg', 'Restarting…', true);
+});
+
+loadConfig();
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

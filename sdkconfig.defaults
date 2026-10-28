@@ -1,0 +1,79 @@
+# WT32-ETH01 (ESP32 + LAN8720A) - eth2ap bring-up, ESP-IDF v6.1
+# Applied only when no sdkconfig exists yet. After editing this file, delete sdkconfig
+# (or run `idf.py fullclean`) so the new defaults take effect.
+
+CONFIG_IDF_TARGET="esp32"
+
+#
+# Ethernet (espressif/ethernet_init)
+#
+CONFIG_ETHERNET_INTERNAL_SUPPORT=y
+# CONFIG_ETHERNET_SPI_SUPPORT is not set
+CONFIG_ETHERNET_PHY_INTERFACE_RMII=y
+# 50 MHz RMII clock comes from the board's oscillator into GPIO0.
+CONFIG_ETHERNET_RMII_CLK_INPUT=y
+CONFIG_ETHERNET_RMII_CLK_GPIO=0
+CONFIG_ETHERNET_PHY_LAN87XX=y
+CONFIG_ETHERNET_PHY_ADDR=1
+CONFIG_ETHERNET_MDC_GPIO=23
+CONFIG_ETHERNET_MDIO_GPIO=18
+# No PHY reset line is wired on the WT32-ETH01.
+CONFIG_ETHERNET_PHY_RST_GPIO=-1
+# GPIO16 enables the 50 MHz oscillator. ethernet_init drives it high in the EMAC low-level
+# init hook, before the EMAC reset. It stays low during boot, keeping GPIO0 strapping intact.
+CONFIG_ETHERNET_BOARD_SPECIFIC_INIT_DEFAULT=y
+CONFIG_ETHERNET_EXT_OSC_EN_GPIO_NUM=16
+
+#
+# Bridge mode (main/Kconfig.projbuild): Mode A = join existing Wi-Fi as the PLC.
+# Use CONFIG_BRIDGE_MODE_SOFTAP=y instead for Mode 0 (own access point).
+#
+CONFIG_BRIDGE_MODE_STA_CLONE=y
+# Existing 2.4 GHz network to join.
+CONFIG_BRIDGE_STA_SSID="GL-MT3000-091"
+CONFIG_BRIDGE_STA_PASSWORD="QAJK3HHMHS"
+# PLC's static IP, in that network's subnet and outside its DHCP pool. Empty = learn it.
+CONFIG_BRIDGE_PLC_IP="192.168.8.50"
+# Event task does Wi-Fi restarts and NVS writes when the PLC is (re)discovered.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+#
+# Setup access point (Mode A): http://192.168.4.1 for status, settings and firmware updates.
+# Change this password before use (8-63 characters).
+#
+CONFIG_BRIDGE_SETUP_AP_SSID="WT32-Bridge-Setup"
+CONFIG_BRIDGE_SETUP_AP_PASSWORD="12345678"
+# Browsers can send long request headers.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
+
+#
+# Firmware updates over Wi-Fi: two app slots (partitions.csv) with rollback
+#
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+#
+# SoftAP (Mode 0 only) - change the password before use
+#
+CONFIG_EXAMPLE_WIFI_SSID="WT32-PLC-Bridge"
+CONFIG_EXAMPLE_WIFI_PASSWORD="12345678"
+# Pick the least congested of 1 / 6 / 11 at the site.
+CONFIG_EXAMPLE_WIFI_CHANNEL=6
+CONFIG_EXAMPLE_MAX_STA_CONN=4
+
+#
+# Wi-Fi buffers: absorb bursts and raise throughput (they don't reduce latency)
+#
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=64
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=64
+
+#
+# FreeRTOS: 1 ms ticks so the flow-control task's 2 ms back-off steps are real
+#
+CONFIG_FREERTOS_HZ=1000
+
+# The WT32-ETH01 module has 4 MB of flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+

@@ -1,0 +1,156 @@
+menu "WT32 PLC Bridge"
+
+    choice BRIDGE_MODE
+        prompt "Bridge mode"
+        default BRIDGE_MODE_STA_CLONE
+        help
+            Mode 0 runs the ESP-IDF eth2ap example: the ESP32 is its own access point and the
+            laptop joins it. Mode A joins an existing Wi-Fi network using the PLC's MAC address,
+            so the PLC appears on that network like any other client.
+
+        config BRIDGE_MODE_SOFTAP
+            bool "Mode 0: own access point (eth2ap)"
+
+        config BRIDGE_MODE_STA_CLONE
+            bool "Mode A: join existing Wi-Fi as the PLC (MAC clone)"
+    endchoice
+
+    if BRIDGE_MODE_STA_CLONE
+
+        config BRIDGE_STA_SSID
+            string "Wi-Fi network (SSID)"
+            default ""
+            help
+                Existing 2.4 GHz network to join. The ESP32 can't use 5 GHz.
+                This and the next two options are factory defaults: values saved from the setup
+                page or the console take precedence until 'factory-reset'.
+
+        config BRIDGE_STA_PASSWORD
+            string "Wi-Fi password"
+            default ""
+            help
+                WPA2/WPA3-Personal password. Leave empty for an open network.
+
+        config BRIDGE_PLC_IP
+            string "PLC IP address"
+            default ""
+            help
+                The PLC's static IP, e.g. 192.168.8.50. When set, the bridge actively asks for
+                the PLC's MAC with ARP probes on Ethernet link-up. When empty, the address is
+                learned from the first IP or ARP frame the PLC sends.
+
+        config BRIDGE_FORWARD_DCP
+            bool "Forward PROFINET DCP"
+            default y
+            help
+                Bridge PROFINET DCP frames (FrameID 0xFEFC-0xFEFF) so TIA Portal's "Accessible
+                devices" scan may find the PLC over Wi-Fi. Whether this works depends on the
+                access point passing non-IP multicast.
+
+        config BRIDGE_DROP_IPV6
+            bool "Drop IPv6 towards the PLC"
+            default y
+            help
+                The S7-1200 doesn't use IPv6; dropping it spares the PLC network chatter.
+
+        config BRIDGE_TX_QUEUE_LEN
+            int "Ethernet->Wi-Fi queue length (frames)"
+            range 8 128
+            default 40
+
+        config BRIDGE_WIFI_WATCHDOG_MIN
+            int "Restart after this many minutes without Wi-Fi (0 = never)"
+            range 0 120
+            default 10
+            help
+                Ethernet link loss never triggers a restart: the PLC may legitimately be off.
+
+        config BRIDGE_STATS_INTERVAL_S
+            int "Log link state and frame counters every N seconds (0 = off)"
+            range 0 3600
+            default 30
+
+        menu "Setup access point and console"
+
+            config BRIDGE_SETUP_AP_SSID
+                string "Setup access point name"
+                default "WT32-Bridge-Setup"
+                help
+                    Separate WPA2 network with the setup page at http://192.168.4.1 (status,
+                    settings, firmware update). It has its own MAC address and never carries
+                    PLC traffic.
+
+            config BRIDGE_SETUP_AP_PASSWORD
+                string "Setup access point password (8-63 characters)"
+                default ""
+                help
+                    Default password. A password changed on the setup page or with the console
+                    command 'setuppass' takes precedence. With no valid password the setup access
+                    point stays off; the serial console still works.
+
+            config BRIDGE_SETUP_AP_AT_BOOT
+                bool "Open the setup access point after every boot"
+                default y
+                help
+                    The WT32-ETH01 has no spare button, so power-cycling the bridge is the way to
+                    reach the setup page. The access point also opens whenever no Wi-Fi network is
+                    configured.
+
+            config BRIDGE_SETUP_AP_IDLE_MIN
+                int "Close the setup access point after N idle minutes"
+                range 1 120
+                default 10
+                help
+                    Counted from the last client leaving. It only closes while the station is
+                    connected to the Wi-Fi network.
+
+            config BRIDGE_SETUP_AP_AFTER_FAIL_MIN
+                int "Open the setup access point after N minutes without Wi-Fi (0 = never)"
+                range 0 60
+                default 2
+
+            config BRIDGE_CONSOLE
+                bool "Serial console commands (status, wifi, plcip, setup, ...)"
+                default y
+
+        endmenu
+
+    endif
+
+endmenu
+
+menu "Example Configuration"
+    depends on BRIDGE_MODE_SOFTAP
+
+    config EXAMPLE_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "eth2ap"
+        help
+            Set the SSID of Wi-Fi ap interface.
+
+    config EXAMPLE_WIFI_PASSWORD
+        string "Wi-Fi Password"
+        default "12345678"
+        help
+            Set the password of Wi-Fi ap interface.
+
+    config EXAMPLE_WIFI_CHANNEL
+        int "WiFi channel"
+        range 1 13
+        default 1
+        help
+            Set the channel of Wi-Fi ap.
+
+    config EXAMPLE_MAX_STA_CONN
+        int "Maximum STA connections"
+        default 4
+        range 1 4 if IDF_TARGET_ESP32C2
+        range 1 15
+        help
+            Maximum number of STAs allowed to connect to the soft-AP (wifi_config_t.ap.max_connection).
+            Upper bound matches ESP_WIFI_MAX_CONN_NUM in esp_wifi_types_native.h:
+            1-4 on ESP32-C2, 1-15 on other Wi-Fi chips.
+            Soft-AP and ESP-NOW share encryption keys; see Wi-Fi driver documentation
+            if ESP-NOW is enabled.
+
+endmenu
