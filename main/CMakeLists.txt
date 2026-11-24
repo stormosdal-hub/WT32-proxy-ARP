@@ -4,7 +4,8 @@ if(CONFIG_BRIDGE_MODE_SOFTAP)
     set(srcs "ethernet_example_main.c")
     set(embed "")
 else()
-    set(srcs "bridge_main.c" "bridge_frames.c" "bridge_config.c" "bridge_web.c" "bridge_console.c")
+    set(srcs "bridge_main.c" "bridge_frames.c" "bridge_config.c" "bridge_nat.c" "bridge_pnio.c"
+             "bridge_web.c" "bridge_console.c")
     set(embed "web/index.html")
 endif()
 

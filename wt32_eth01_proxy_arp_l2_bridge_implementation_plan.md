@@ -408,6 +408,15 @@ Rules:
 
 ### Phase 5: Mode B — MAC-NAT (optional)
 
+> **Status (2026-11-23): implemented as a hybrid instead, "Mode A + other devices"** (`main/bridge_nat.c`, setting *Also bridge other devices on the switch*). The station keeps the **PLC's** MAC, and the PLC keeps everything Mode A gives it, including DCP. Other IPv4 devices are MAC-NATed under that MAC, following 5.2/5.3:
+> - **Kept from 5.2/5.3:** SHA/THA rewriting, unicast ARP revalidation, and dropping traffic local to the switch.
+> - **Default destination:** anything not matching a device still goes to the PLC.
+> - **Table (8 entries, up to 16):** least-recently-seen replacement instead of time-based aging, so a quiet device stays reachable. It's saved in NVS and announced with gratuitous ARPs after each reconnect.
+> - **Static IPs only:** no DHCP rewriting (5.2 step 5).
+> - **Needs the PLC IP:** the bridge uses it to tell the PLC apart from the other devices.
+>
+> The table logic passed a host-side unit test (23 checks); it hasn't been tested on hardware yet. The plain Mode B below (station on the ESP32's own MAC) isn't built.
+
 Only needed if several Ethernet devices must share the bridge. The station keeps its own MAC; no `esp_wifi_set_mac()`. Use `sta2eth`'s `mac_spoof()` as a reference, but replace its DHCP-Discover-only host learning with the rules below.
 
 #### 5.1 Translation table

@@ -36,6 +36,8 @@
 #include "bridge.h"
 #include "bridge_config.h"
 #include "bridge_frames.h"
+#include "bridge_nat.h"
+#include "bridge_pnio.h"
 
 static const char *TAG = "bridge";
 
@@ -84,6 +86,7 @@ static struct {
     uint32_t wifi2eth_fwd;
     uint32_t wifi2eth_tx_fail;
     uint32_t reconnects;
+    uint32_t eth2wifi_pnio;                 // PLC -> IO devices on Wi-Fi (cyclic data, alarms)
 } s_stats;
 
 static bridge_config_t s_cfg;               // settings in effect since boot
@@ -99,6 +102,7 @@ static volatile bool s_plc_seen;            // PLC reported since the last Ether
 static volatile bool s_eth_link_up;
 static volatile bool s_sta_connected;
 static int s_probes_unanswered;             // since the last Ethernet link-up
+static bool s_nat_enabled;                  // other devices on the switch are bridged too (bridge_nat.c)
 
 // Wi-Fi state; changed only in the event task (and in app_main before Ethernet starts).
 static bool s_wifi_started;
@@ -167,10 +171,22 @@ static bool egress_allowed(const uint8_t *frame, uint32_t len)
     case ETHTYPE_IPV4:
     case ETHTYPE_ARP:
         return true;
-#if CONFIG_BRIDGE_FORWARD_DCP
     case ETHTYPE_PROFINET:
-        return frame_is_profinet_dcp(frame, len);
+        if (frame_is_profinet_dcp(frame, len)) {
+#if CONFIG_BRIDGE_FORWARD_DCP
+            return true;
+#else
+            return false;
 #endif
+        }
+#if CONFIG_BRIDGE_FORWARD_PNIO
+        // Cyclic data and alarms: only to IO devices on the Wi-Fi side (bridge_pnio.h)
+        if (!mac_is_group(dst) && pnio_peer_known(dst)) {
+            s_stats.eth2wifi_pnio++;
+            return true;
+        }
+#endif
+        return false;
     default:
         return false;
     }
@@ -192,6 +208,13 @@ static void learn_from_ethernet(const uint8_t *frame, uint32_t len)
         return;
     }
     if (s_plc_ip != 0 && sender_ip != s_plc_ip) {
+        if (s_nat_enabled) {
+            // Another device on the switch (the PLC's own MAC is never one of them).
+            if (!(s_plc_mac_set && mac_equal(src, s_plc_mac))) {
+                nat_learn(src, sender_ip);
+            }
+            return;
+        }
         // Most often the PLC itself with a different IP than configured: say so once per address.
         if (sender_ip != s_ignored_ip) {
             s_ignored_ip = sender_ip;
@@ -212,11 +235,26 @@ static void learn_from_ethernet(const uint8_t *frame, uint32_t len)
     }
 }
 
+// The PLC's own frames pass unchanged; with "bridge other devices" on, other devices' IPv4/ARP
+// frames are rewritten to come from the PLC's MAC (bridge_nat.c).
+static bool forward_to_wifi(uint8_t *frame, uint32_t len)
+{
+    if (egress_allowed(frame, len)) {
+        return true;
+    }
+    const uint8_t *src = frame + BR_MAC_LEN;
+    return s_nat_enabled && s_plc_mac_set && len >= ETH_HDR_LEN && !mac_is_group(src) &&
+           !mac_equal(src, s_plc_mac) && nat_egress(frame, len, s_plc_mac);
+}
+
 // EMAC RX callback; we own `buf` and must free it on every path that doesn't queue it.
 static esp_err_t eth_to_wifi(esp_eth_handle_t eth, uint8_t *buf, uint32_t len, void *priv)
 {
     learn_from_ethernet(buf, len);
-    if (s_sta_connected && egress_allowed(buf, len)) {
+    if (s_sta_connected && forward_to_wifi(buf, len)) {
+#if CONFIG_BRIDGE_FORWARD_PNIO
+        len = frame_strip_priority_tag(buf, len);   // the PLC tags PROFINET frames; Wi-Fi has its own priority
+#endif
         tx_msg_t msg = { .buf = buf, .len = len };
         if (xQueueSend(s_tx_queue, &msg, pdMS_TO_TICKS(TX_ENQUEUE_TIMEOUT_MS)) == pdTRUE) {
             return ESP_OK;                  // wifi_tx_task frees it after sending
@@ -275,6 +313,15 @@ static bool ingress_allowed(const uint8_t *frame, uint16_t len)
 static esp_err_t wifi_to_eth(void *buffer, uint16_t len, void *eb)
 {
     if (s_eth_link_up && ingress_allowed(buffer, len)) {
+#if CONFIG_BRIDGE_FORWARD_PNIO
+        // A PROFINET IO device on this side: the PLC's cyclic frames to it may go to Wi-Fi.
+        if (!mac_is_group(buffer) && frame_ethertype(buffer, len, NULL) == ETHTYPE_PROFINET) {
+            pnio_peer_seen((const uint8_t *)buffer + BR_MAC_LEN);
+        }
+#endif
+        if (s_nat_enabled && !mac_is_group(buffer)) {
+            nat_ingress(buffer, len, s_plc_mac);    // for another device? Then give it its own MAC
+        }
         if (esp_eth_transmit(s_eth, buffer, len) == ESP_OK) {
             s_stats.wifi2eth_fwd++;
         } else {
@@ -287,19 +334,36 @@ static esp_err_t wifi_to_eth(void *buffer, uint16_t len, void *eb)
 
 /* ---------- Wi-Fi control (event task) ---------- */
 
+static void send_gratuitous_arp_for(uint32_t ip)
+{
+    uint8_t frame[ETH_MIN_FRAME_LEN];
+    size_t len = build_arp_request(frame, s_plc_mac, ip, ip);
+    int err = esp_wifi_internal_tx(WIFI_IF_STA, frame, (uint16_t)len);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Gratuitous ARP sent for " IPV4_FMT, IPV4_ARGS(ip));
+    } else {
+        ESP_LOGW(TAG, "Gratuitous ARP for " IPV4_FMT " failed: %s", IPV4_ARGS(ip), esp_err_to_name(err));
+    }
+}
+
 // Tells the network the PLC's IP now lives behind this station, refreshing ARP caches.
 static void send_gratuitous_arp(void)
 {
-    if (s_plc_ip == 0 || !s_sta_connected) {
+    if (s_plc_ip != 0 && s_sta_connected) {
+        send_gratuitous_arp_for(s_plc_ip);
+    }
+}
+
+// The same for every other device bridged through the station.
+static void announce_devices(void)
+{
+    if (!s_nat_enabled || !s_sta_connected) {
         return;
     }
-    uint8_t frame[ETH_MIN_FRAME_LEN];
-    size_t len = build_arp_request(frame, s_plc_mac, s_plc_ip, s_plc_ip);
-    int err = esp_wifi_internal_tx(WIFI_IF_STA, frame, (uint16_t)len);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Gratuitous ARP sent for " IPV4_FMT, IPV4_ARGS(s_plc_ip));
-    } else {
-        ESP_LOGW(TAG, "Gratuitous ARP failed: %s", esp_err_to_name(err));
+    nat_device_t devices[NAT_MAX_DEVICES];
+    size_t count = nat_get_devices(devices, NAT_MAX_DEVICES);
+    for (size_t i = 0; i < count; i++) {
+        send_gratuitous_arp_for(devices[i].ip);
     }
 }
 
@@ -444,6 +508,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         s_sta_connected = true;
         ESP_LOGI(TAG, "Wi-Fi connected to " MACSTR " on channel %u", MAC2STR(ev->bssid), ev->channel);
         send_gratuitous_arp();
+        announce_devices();
         if (ev->channel != s_cached_channel) {
             s_cached_channel = ev->channel;
             cache_set(NVS_KEY_CHANNEL, &s_cached_channel, sizeof(s_cached_channel));
@@ -624,8 +689,16 @@ void bridge_get_status(bridge_status_t *status)
     status->wifi2eth_fwd = s_stats.wifi2eth_fwd;
     status->wifi2eth_tx_fail = s_stats.wifi2eth_tx_fail;
     status->reconnects = s_stats.reconnects;
+    status->eth2wifi_pnio = s_stats.eth2wifi_pnio;
+#if CONFIG_BRIDGE_FORWARD_PNIO
+    status->pnio_devices = pnio_peer_count();
+#endif
     status->setup_ap_active = s_ap_enabled;
     status->setup_ap_clients = setup_ap_client_count();
+    status->nat_active = s_nat_enabled;
+    if (s_nat_enabled) {
+        status->nat_count = (int)nat_get_devices(status->nat_devices, NAT_MAX_DEVICES);
+    }
 }
 
 void bridge_request_setup_ap(bool on)
@@ -663,6 +736,16 @@ void bridge_mark_app_valid(void)
 static void housekeeping_cb(void *arg)
 {
     int64_t now = esp_timer_get_time();
+    if (s_nat_enabled) {
+        nat_save_if_changed();                  // here, not in the RX path: flash writes block
+    }
+#if CONFIG_BRIDGE_FORWARD_PNIO
+    uint8_t peer[BR_MAC_LEN];
+    if (pnio_take_new_peer(peer)) {
+        ESP_LOGI(TAG, "PROFINET IO device on Wi-Fi: " MACSTR " - the PLC's cyclic data and alarms to it go to Wi-Fi",
+                 MAC2STR(peer));
+    }
+#endif
     int64_t since = s_disconnected_since_us;
     bool wifi_down = s_wifi_started && s_station_enabled && !s_sta_connected && since != 0;
     int ap_clients = setup_ap_client_count();
@@ -704,6 +787,20 @@ static void housekeeping_cb(void *arg)
                  s_stats.eth2wifi_fwd, s_stats.eth2wifi_queue_full, s_stats.eth2wifi_tx_fail,
                  s_stats.wifi2eth_fwd, s_stats.wifi2eth_tx_fail, s_stats.reconnects,
                  s_ap_enabled ? " | setup AP open" : "");
+#if CONFIG_BRIDGE_FORWARD_PNIO
+        int peers = pnio_peer_count();
+        if (peers > 0 || s_stats.eth2wifi_pnio > 0) {
+            ESP_LOGI(TAG, "  PROFINET IO: eth->wifi %" PRIu32 " frames, %d device(s) on Wi-Fi", s_stats.eth2wifi_pnio, peers);
+        }
+#endif
+        if (s_nat_enabled) {
+            nat_device_t devices[NAT_MAX_DEVICES];
+            size_t count = nat_get_devices(devices, NAT_MAX_DEVICES);
+            for (size_t i = 0; i < count; i++) {
+                ESP_LOGI(TAG, "  device " IPV4_FMT " (" MACSTR "): to Wi-Fi %" PRIu32 ", from Wi-Fi %" PRIu32,
+                         IPV4_ARGS(devices[i].ip), MAC2STR(devices[i].mac), devices[i].to_wifi, devices[i].to_eth);
+            }
+        }
     }
 #endif
 }
@@ -726,6 +823,18 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "PLC IP not set - learning it from the PLC's first IP/ARP frame");
     }
+    // Telling the PLC apart from the other devices on the switch takes its IP.
+    if (s_cfg.nat_enabled && s_plc_ip == 0) {
+        ESP_LOGW(TAG, "\"Bridge other devices\" stays off until the PLC IP is set");
+    }
+    s_nat_enabled = s_cfg.nat_enabled && s_plc_ip != 0;
+    if (s_nat_enabled) {
+        nat_init(CONFIG_BRIDGE_NAT_MAX_DEVICES);
+        ESP_LOGI(TAG, "Bridging other IPv4 devices on the switch too (up to %d)", CONFIG_BRIDGE_NAT_MAX_DEVICES);
+    }
+#if CONFIG_BRIDGE_FORWARD_PNIO
+    pnio_init(CONFIG_BRIDGE_PNIO_PEER_TIMEOUT_S);
+#endif
 
     s_tx_queue = xQueueCreate(CONFIG_BRIDGE_TX_QUEUE_LEN, sizeof(tx_msg_t));
     assert(s_tx_queue);

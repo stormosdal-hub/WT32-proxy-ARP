@@ -56,6 +56,15 @@ bool frame_is_profinet_dcp(const uint8_t *frame, uint32_t len)
     return frame_id >= 0xFEFC && frame_id <= 0xFEFF;
 }
 
+uint32_t frame_strip_priority_tag(uint8_t *frame, uint32_t len)
+{
+    if (len < ETH_HDR_LEN + 4 || read_be16(frame + 12) != ETHTYPE_VLAN || (read_be16(frame + 14) & 0x0FFF) != 0) {
+        return len;
+    }
+    memmove(frame + 12, frame + 16, len - 16);         // EtherType and payload move down over the tag
+    return len - 4;
+}
+
 bool frame_sender_ip(const uint8_t *frame, uint32_t len, uint32_t *ip)
 {
     if (len < ETH_HDR_LEN) {

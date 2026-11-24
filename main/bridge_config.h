@@ -13,6 +13,7 @@ typedef struct {
     char sta_password[65];      // empty = open network
     uint32_t plc_ip;            // network byte order, 0 = learn from the PLC's traffic
     char setup_password[65];    // setup access point (WPA2, at least 8 characters)
+    bool nat_enabled;           // also bridge other IPv4 devices on the switch (bridge_nat.h)
 } bridge_config_t;
 
 // Fills cfg with the saved settings, falling back to the Kconfig defaults.

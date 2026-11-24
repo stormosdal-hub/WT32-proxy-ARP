@@ -31,18 +31,20 @@ CONFIG_ETHERNET_EXT_OSC_EN_GPIO_NUM=16
 CONFIG_BRIDGE_MODE_STA_CLONE=y
 # Existing 2.4 GHz network to join.
 CONFIG_BRIDGE_STA_SSID="GL-MT3000-091"
-CONFIG_BRIDGE_STA_PASSWORD="QAJK3HHMHS"
+# Password (CONFIG_BRIDGE_STA_PASSWORD): in sdkconfig.secrets, which is not in git
 # PLC's static IP, in that network's subnet and outside its DHCP pool. Empty = learn it.
 CONFIG_BRIDGE_PLC_IP="192.168.8.50"
+# Also bridge other IPv4 devices on the switch (static IPs), under the PLC's MAC. Needs the PLC IP.
+CONFIG_BRIDGE_NAT_DEFAULT=y
 # Event task does Wi-Fi restarts and NVS writes when the PLC is (re)discovered.
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 
 #
 # Setup access point (Mode A): http://192.168.4.1 for status, settings and firmware updates.
-# Change this password before use (8-63 characters).
+# Its password (8-63 characters) is in sdkconfig.secrets.
 #
 CONFIG_BRIDGE_SETUP_AP_SSID="WT32-Bridge-Setup"
-CONFIG_BRIDGE_SETUP_AP_PASSWORD="12345678"
+# Password (CONFIG_BRIDGE_SETUP_AP_PASSWORD): in sdkconfig.secrets, which is not in git
 # Browsers can send long request headers.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
 
@@ -54,10 +56,10 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 #
-# SoftAP (Mode 0 only) - change the password before use
+# SoftAP (Mode 0 only)
 #
 CONFIG_EXAMPLE_WIFI_SSID="WT32-PLC-Bridge"
-CONFIG_EXAMPLE_WIFI_PASSWORD="12345678"
+# Password (CONFIG_EXAMPLE_WIFI_PASSWORD): in sdkconfig.secrets, which is not in git
 # Pick the least congested of 1 / 6 / 11 at the site.
 CONFIG_EXAMPLE_WIFI_CHANNEL=6
 CONFIG_EXAMPLE_MAX_STA_CONN=4

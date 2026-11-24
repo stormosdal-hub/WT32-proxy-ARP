@@ -16,6 +16,13 @@ static const char *TAG = "bridge_cfg";
 #define KEY_PASSWORD        "pass"
 #define KEY_PLC_IP          "plc_ip"
 #define KEY_SETUP_PASSWORD  "setup_pass"
+#define KEY_NAT             "nat"
+
+#if CONFIG_BRIDGE_NAT_DEFAULT
+#define NAT_DEFAULT         true
+#else
+#define NAT_DEFAULT         false
+#endif
 
 static void load_str(nvs_handle_t nvs, const char *key, char *dst, size_t size)
 {
@@ -32,6 +39,7 @@ void bridge_config_load(bridge_config_t *cfg)
     strlcpy(cfg->sta_ssid, CONFIG_BRIDGE_STA_SSID, sizeof(cfg->sta_ssid));
     strlcpy(cfg->sta_password, CONFIG_BRIDGE_STA_PASSWORD, sizeof(cfg->sta_password));
     strlcpy(cfg->setup_password, CONFIG_BRIDGE_SETUP_AP_PASSWORD, sizeof(cfg->setup_password));
+    cfg->nat_enabled = NAT_DEFAULT;
     if (strlen(CONFIG_BRIDGE_PLC_IP) > 0 && !ipv4_parse(CONFIG_BRIDGE_PLC_IP, &cfg->plc_ip)) {
         ESP_LOGE(TAG, "Invalid CONFIG_BRIDGE_PLC_IP \"%s\" - learning the PLC IP instead", CONFIG_BRIDGE_PLC_IP);
         cfg->plc_ip = 0;
@@ -47,6 +55,10 @@ void bridge_config_load(bridge_config_t *cfg)
     uint32_t ip;
     if (nvs_get_u32(nvs, KEY_PLC_IP, &ip) == ESP_OK) {
         cfg->plc_ip = ip;
+    }
+    uint8_t nat;
+    if (nvs_get_u8(nvs, KEY_NAT, &nat) == ESP_OK) {
+        cfg->nat_enabled = nat != 0;
     }
     nvs_close(nvs);
 }
@@ -72,6 +84,9 @@ esp_err_t bridge_config_save(const bridge_config_t *cfg)
     }
     if (err == ESP_OK && cfg->plc_ip != current.plc_ip) {
         err = nvs_set_u32(nvs, KEY_PLC_IP, cfg->plc_ip);
+    }
+    if (err == ESP_OK && cfg->nat_enabled != current.nat_enabled) {
+        err = nvs_set_u8(nvs, KEY_NAT, cfg->nat_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
         err = nvs_commit(nvs);

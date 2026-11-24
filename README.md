@@ -13,7 +13,9 @@ Wireless access to a Siemens S7-1200 through a WT32-ETH01 (ESP32 + LAN8720A), fo
 | :-- | :-- |
 | `main/bridge_main.c` | Mode A: PLC MAC discovery, station MAC cloning, forwarding in both directions, reconnects, setup access point, watchdog, statistics |
 | `main/bridge_frames.c` / `.h` | Mode A: Ethernet/ARP frame parsing and building |
-| `main/bridge_config.c` / `.h` | Mode A: settings saved in NVS (Wi-Fi network, PLC IP, setup password) |
+| `main/bridge_config.c` / `.h` | Mode A: settings saved in NVS (Wi-Fi network, PLC IP, setup password, other devices) |
+| `main/bridge_nat.c` / `.h` | Mode A: other devices on the switch, under the PLC's MAC (MAC-NAT) |
+| `main/bridge_pnio.c` / `.h` | Mode A: PROFINET IO devices on the Wi-Fi side, for the PLC's cyclic data and alarms |
 | `main/bridge_web.c`, `main/web/index.html` | Mode A: setup page and its JSON API, firmware upload |
 | `main/bridge_console.c` | Mode A: serial console commands |
 | `partitions.csv` | Two 1.9 MB app slots for firmware updates over Wi-Fi |
@@ -21,7 +23,8 @@ Wireless access to a Siemens S7-1200 through a WT32-ETH01 (ESP32 + LAN8720A), fo
 | `main/Kconfig.projbuild` | Mode selection and the options for each mode |
 | `main/CMakeLists.txt` | Compiles only the selected mode's sources |
 | `main/idf_component.yml` | `espressif/ethernet_init ^1.4.1`, which pulls in the LAN87xx PHY driver on IDF 6.x |
-| `sdkconfig.defaults` | WT32-ETH01 board settings, mode settings, Wi-Fi buffers, 1 ms FreeRTOS tick, 4 MB flash |
+| `sdkconfig.defaults` | WT32-ETH01 board settings, mode settings, Wi-Fi buffers, 1 ms FreeRTOS tick, 4 MB flash. No passwords |
+| `sdkconfig.secrets.example` | Template for `sdkconfig.secrets`, the passwords file (not in git) |
 
 ## WT32-ETH01 settings
 
@@ -51,14 +54,24 @@ Wireless access to a Siemens S7-1200 through a WT32-ETH01 (ESP32 + LAN8720A), fo
   ```
 
 - **VS Code:** this project's `.vscode/settings.json` selects the v6.1 setup (registered in `C:\Users\Storm\.espressif\esp_idf.json`).
-- **Last verified builds (2026-10-17):** ESP-IDF 6.1.0, `ethernet_init` 1.4.1, `lan87xx` 1.1.0 (see `dependencies.lock`). Mode A app 0xE9A40 bytes (51 % of a 1.9 MB app slot free), Mode 0 app 0xAE170 bytes.
+- **Last verified builds (2026-10-17):** ESP-IDF 6.1.0, `ethernet_init` 1.4.1, `lan87xx` 1.1.0 (see `dependencies.lock`). Mode A app 0xEB0E0 bytes (51 % of a 1.9 MB app slot free), Mode 0 app 0xAE170 bytes (2026-11-23).
 
 ## Changing settings
 
 There are two layers:
 
-1. **Build defaults:** `idf.py menuconfig` → *WT32 PLC Bridge*, or `sdkconfig.defaults`. `sdkconfig.defaults` is only applied when no `sdkconfig` exists, so after editing it, delete `sdkconfig` or run `idf.py fullclean`.
+1. **Build defaults:** `idf.py menuconfig` → *WT32 PLC Bridge*, or `sdkconfig.defaults`, plus `sdkconfig.secrets` for the passwords. Both files are only applied when no `sdkconfig` exists, so after editing one, delete `sdkconfig` or run `idf.py fullclean`.
 2. **Saved settings (Mode A):** the Wi-Fi network, PLC IP and setup password set on the setup page or with the console are stored on the bridge. They **override the build defaults**, survive firmware updates, and take effect after a restart. `factory-reset` (console) erases them and goes back to the build defaults.
+
+### Passwords
+
+Passwords never go in `sdkconfig.defaults`. They live in **`sdkconfig.secrets`**, which git ignores and the build reads after `sdkconfig.defaults`, so its values win (see `CMakeLists.txt`). For a fresh clone:
+
+```bash
+cp sdkconfig.secrets.example sdkconfig.secrets
+```
+
+Then fill in the Wi-Fi password, the setup access point password and the Mode 0 password. The generated `sdkconfig` and `sdkconfig.old` contain the passwords too, and are ignored as well.
 
 ## Build & flash
 
@@ -80,7 +93,7 @@ If your adapter can't put the board into bootloader mode automatically:
 
 ### 1. Configure
 
-In `sdkconfig.defaults` (or menuconfig):
+In `sdkconfig.defaults` and, for the password, `sdkconfig.secrets` (or menuconfig, or later the setup page):
 
 | Option | Set to |
 | :-- | :-- |
@@ -126,20 +139,67 @@ The laptop stays on its normal Wi-Fi with automatic IP (undo any static IP from 
 3. TIA Portal: *Online access* → Wi-Fi adapter. Try *Update accessible devices* (DCP; works only if the router passes it). Otherwise type `192.168.8.50` as the target address. Go online, monitor, download.
 4. Robustness: `ping -n 1000 192.168.8.50` (no loss), reboot the router (the bridge reconnects; ping resumes), power-cycle the PLC, power-cycle the bridge.
 
+### 6. Other devices on the switch
+
+With *Also bridge other devices on the switch* on (the default in `sdkconfig.defaults`; setup page checkbox; console `nat on|off`), any other **IPv4** device on the switch is reachable over Wi-Fi too, e.g. a Linux board without Wi-Fi. The PLC is unaffected: its frames still pass unmodified, including *Accessible devices*.
+
+**How:** the access point only knows the PLC's MAC, so the bridge sends the other devices' frames under it. It rewrites the Ethernet source and ARP sender address on the way out, and on the way back picks the device by destination IP and restores its MAC. Devices are learned from their own traffic, kept in a table of up to 8 (`CONFIG_BRIDGE_NAT_MAX_DEVICES`), saved across restarts, and announced again after every Wi-Fi reconnect.
+
+**Requirements:**
+- **The PLC IP must be set.** It's how the bridge tells the PLC apart from the rest.
+- **Give the devices static IPs** in the router's subnet, outside its DHCP pool. DHCP replies can't reach them this way.
+
+**Example: Luckfox at `192.168.0.60`** (GL.iNet LAN `192.168.0.0/24`, router `192.168.0.254`). On the board, until you make it permanent in its network configuration:
+
+```bash
+ip addr add 192.168.0.60/24 dev eth0
+```
+
+```bash
+ip route add default via 192.168.0.254
+```
+
+Use `192.168.0.254` as DNS server too, for internet access. The bridge logs `bridge_nat: Bridging device 192.168.0.60 (…)` as soon as the board sends anything. The device then appears under *Other devices* on the setup page and in `status`.
+
+**Testing from the laptop:** unplug the laptop's Ethernet cable from the switch (or disable that adapter) first. Otherwise Windows reaches `192.168.0.60` over the cable and the test proves nothing. Then `ping 192.168.0.60` and `ssh root@192.168.0.60`. In `arp -a`, `192.168.0.60` shows the **PLC's** MAC, which is expected.
+
+**Limitations:**
+- **IPv4 only:** no IPv6, and no non-IP protocols for these devices.
+- **One router client:** the router lists everything as one client (the PLC's MAC) with several IPs, so router features that work per MAC (filters, statistics) can't tell the devices apart.
+- **Shared airtime:** all devices share the bridge's Wi-Fi link (roughly 10–20 Mbit/s). A large transfer by another device can slow PLC monitoring while it runs.
+
+### 7. PROFINET IO devices on Wi-Fi
+
+The PLC can run PROFINET IO devices that are themselves on the Wi-Fi network, such as the ESP32-P4 IO device in its Wi-Fi build (`CONFIG_BRIDGE_FORWARD_PNIO`, on by default):
+
+- **Discovery and connection** pass as always: DCP, and the connection's UDP.
+- **Cyclic data and alarms** from the PLC go to Wi-Fi only for devices that sent the PLC PROFINET frames over Wi-Fi in the last minute (`CONFIG_BRIDGE_PNIO_PEER_TIMEOUT_S`). A device does that when it answers the PLC's DCP Identify, before it connects. The PLC's traffic with IO devices on its own cable stays off the air.
+- **The priority tag** (802.1Q, VLAN 0) on these frames is removed on the way to Wi-Fi; Wi-Fi has its own priority. Frames from Wi-Fi to the PLC pass as they arrive.
+
+The log shows `PROFINET IO device on Wi-Fi: <MAC>` once per device, and in the 30-second status `PROFINET IO: eth->wifi … frames, … device(s) on Wi-Fi`. The same appears in `status` and on the setup page.
+
+**Without this (before 2026-11-24):** the bridge passed only DCP from the PLC. The device connected, and its inputs reached the PLC, but:
+- the PLC's outputs never arrived;
+- the PLC's **alarm acknowledgements** never arrived. After each alarm the device aborted the connection, and the PLC showed *IO device failure*, recovered and failed again.
+
+The device didn't notice the missing cyclic frames itself, because p-net's data hold timer only starts with the first one.
+
+**Timing:** each frame crosses the radio twice (bridge → access point → device). In TIA Portal, give such a device a longer *Update time* (e.g. 32 ms) and more *Accepted update cycles without IO data* (e.g. 10), as in the P4 project's README. Fine for sensor values and slow outputs, never for fast or safety-related control.
+
 ## Mode A: setup page, console and firmware updates
 
 ### First flash with Phase 4
 
 The partition table changed (two app slots), so the first Phase 4 flash must go over USB: `idf.py -p COM6 flash`. The settings area (NVS) keeps its place, so the cached PLC MAC survives and the bridge reconnects straight away. Later updates can go over Wi-Fi.
 
-Change `CONFIG_BRIDGE_SETUP_AP_PASSWORD` (placeholder `ChangeMe-Setup`) before flashing, or right afterwards on the setup page.
+Set `CONFIG_BRIDGE_SETUP_AP_PASSWORD` in `sdkconfig.secrets` before flashing, or change it right afterwards on the setup page.
 
 ### Setup page
 
 The bridge opens a separate WPA2 network, **`WT32-Bridge-Setup`**, and serves **http://192.168.4.1** on it:
 
 - **Status:** Ethernet link, Wi-Fi (network, signal, channel), PLC MAC and IP, frame counters and drops, reconnects, uptime, last reset reason, free memory.
-- **Settings:** Wi-Fi network and password, PLC IP, setup password. *Save and restart* applies them in about 5 s. Leaving a password field empty keeps the saved one.
+- **Settings:** Wi-Fi network and password, PLC IP, setup password, *Also bridge other devices on the switch*. *Save and restart* applies them in about 5 s. Leaving a password field empty keeps the saved one.
 - **Firmware update:** upload `build/wt32_eth2ap.bin`. Images from other projects are refused.
 
 The setup network has its own MAC address and never carries PLC traffic. It opens:
@@ -160,6 +220,7 @@ Type commands in the serial monitor (`idf.py -p COM6 monitor`) at the `bridge>` 
 | `status` | Links, PLC, counters, setup access point |
 | `wifi <ssid> [password]` | Saves the Wi-Fi network (quote names with spaces) |
 | `plcip <a.b.c.d \| auto>` | Saves the PLC IP |
+| `nat on` / `nat off` | Bridges other IPv4 devices on the switch too (applies after `restart`) |
 | `setup on` / `setup off` | Opens or closes the setup access point |
 | `setuppass <password>` | Saves the setup access point password |
 | `restart` | Restarts and applies saved settings |
@@ -201,6 +262,8 @@ Set `CONFIG_BRIDGE_MODE_SOFTAP=y` (instead of `CONFIG_BRIDGE_MODE_STA_CLONE=y`) 
 | Mode A: waits forever at `waiting for the PLC on Ethernet` | Wi-Fi only starts once the PLC's MAC is known. `Ignoring traffic from <IP>` means the PLC has a different IP than `CONFIG_BRIDGE_PLC_IP`. `No answer from <IP>` means nothing at that address replied. Fix the IP, or leave it empty to learn it, and unplug/replug the Ethernet cable so the PLC announces itself |
 | Mode A: repeated `Wi-Fi disconnected (reason …)` | **201**: network not found (wrong SSID, or 5 GHz only). **15 / 202 / 204**: usually a wrong password. **210 / 211**: security mode mismatch. Also check MAC filtering on the router. Full list: ESP-IDF `wifi_err_reason_t` |
 | Mode A: connected, but no ping | PLC IP not in the router's subnet, client isolation on, or the laptop still has a static IP |
+| Mode A: another device isn't reachable | Check `status` / *Other devices*: it appears once it has sent an IP or ARP frame. Its IP must be static and in the router's subnet. `"Bridge other devices" stays off until the PLC IP is set` means exactly that |
+| Mode A: `Device table full: dropped …` | More devices than `CONFIG_BRIDGE_NAT_MAX_DEVICES` (8) talk on the switch. Raise it (up to 16) |
 | Mode A: `Setup access point unavailable` / `disabled` | The setup password is shorter than 8 characters. Set one with the console: `setuppass <password>`, then `restart` |
 | Mode A: setup page doesn't open | Join `WT32-Bridge-Setup` first, then open `http://192.168.4.1` (not https). Phones may need "stay connected" because the network has no internet |
 | Mode A: `sdkconfig.defaults` Wi-Fi/PLC IP changes ignored | Settings saved on the bridge override the build defaults. Change them on the setup page, or run `factory-reset` |
@@ -208,5 +271,6 @@ Set `CONFIG_BRIDGE_MODE_SOFTAP=y` (instead of `CONFIG_BRIDGE_MODE_STA_CLONE=y`) 
 | Mode A: `eth->wifi … tx fail` keeps rising | Weak signal or a congested channel. Check `rssi` in the statistics line |
 | Mode 0: SoftAP not visible | No Ethernet link: the PLC is off or the cable is unplugged. The AP only starts on link-up |
 | Mode 0: laptop gets no IP | Expected: there's no DHCP. Use a static IP |
-| `sdkconfig.defaults` edits have no effect | Delete `sdkconfig` or run `idf.py fullclean` |
+| `sdkconfig.defaults` / `sdkconfig.secrets` edits have no effect | Delete `sdkconfig` or run `idf.py fullclean` |
+| Setup AP disabled or no Wi-Fi after a fresh clone | `sdkconfig.secrets` is missing: copy `sdkconfig.secrets.example`, fill it in, delete `sdkconfig`, build |
 | Windows build errors like "opening dependency file … No such file or directory" | Path too long. Keep the project and build directory at short paths |

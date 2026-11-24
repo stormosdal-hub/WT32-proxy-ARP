@@ -47,6 +47,45 @@ menu "WT32 PLC Bridge"
                 devices" scan may find the PLC over Wi-Fi. Whether this works depends on the
                 access point passing non-IP multicast.
 
+        config BRIDGE_FORWARD_PNIO
+            bool "Forward PROFINET IO to IO devices on Wi-Fi"
+            default y
+            help
+                Lets the PLC run PROFINET IO devices that are on the Wi-Fi network, such as an
+                ESP32-P4 IO device on Wi-Fi. The PLC's cyclic data and alarm frames go to Wi-Fi,
+                but only to devices that sent the PLC PROFINET frames over Wi-Fi within
+                BRIDGE_PNIO_PEER_TIMEOUT_S. A device does that when it answers the PLC's DCP
+                Identify, before it connects. The PLC's traffic with IO devices on its own cable
+                stays off the air. On the way, frames lose their 802.1Q priority tag (VLAN 0):
+                Wi-Fi carries the priority itself.
+                Without this, the PLC's alarm acknowledgements never reach such a device: it
+                aborts the connection after each alarm ("IO device failure"), and the PLC's
+                outputs never arrive.
+
+        config BRIDGE_PNIO_PEER_TIMEOUT_S
+            int "Seconds an IO device on Wi-Fi counts as present after its last frame"
+            depends on BRIDGE_FORWARD_PNIO
+            range 5 600
+            default 60
+
+        config BRIDGE_NAT_DEFAULT
+            bool "Also bridge other devices on the switch (IPv4)"
+            default n
+            help
+                Default for the setting of the same name on the setup page (console: 'nat').
+                IPv4 devices on the switch besides the PLC are reached over Wi-Fi under the
+                PLC's MAC address (MAC-NAT): their Ethernet source and ARP sender addresses are
+                rewritten on the way out, and restored by destination IP on the way back. The
+                PLC itself is unaffected. Needs the PLC IP to be set. Give the devices static
+                IPs: DHCP replies can't reach them this way.
+
+        config BRIDGE_NAT_MAX_DEVICES
+            int "Maximum number of other devices"
+            range 1 16
+            default 8
+            help
+                When the table is full, the device seen least recently makes room.
+
         config BRIDGE_DROP_IPV6
             bool "Drop IPv6 towards the PLC"
             default y

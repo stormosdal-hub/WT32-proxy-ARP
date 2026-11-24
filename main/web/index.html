@@ -61,6 +61,7 @@
       <dt>Ethernet</dt><dd id="s-eth">…</dd>
       <dt>Wi-Fi</dt><dd id="s-wifi">…</dd>
       <dt>PLC</dt><dd id="s-plc">…</dd>
+      <dt>Other devices</dt><dd id="s-nat">…</dd>
       <dt>Traffic</dt><dd id="s-traffic">…</dd>
       <dt>Reconnects</dt><dd id="s-reconnects">…</dd>
       <dt>Uptime</dt><dd id="s-uptime">…</dd>
@@ -82,7 +83,10 @@
 
       <label for="plc_ip">PLC IP address</label>
       <input type="text" id="plc_ip" name="plc_ip" maxlength="15" placeholder="learn automatically" inputmode="decimal" autocomplete="off">
-      <div class="hint">The PLC's own static address, in the Wi-Fi network's subnet.</div>
+      <div class="hint">The PLC's own static address.</div>
+
+      <label class="inline"><input type="checkbox" id="nat" name="nat" value="1"> Also bridge other devices on the switch</label>
+      <div class="hint">IPv4 only, under the PLC's Wi-Fi address. Give them static IPs; needs the PLC IP above.</div>
 
       <label for="setup_password">Setup access point password</label>
       <input type="password" id="setup_password" name="setup_password" maxlength="63" placeholder="unchanged" autocomplete="new-password">
@@ -132,6 +136,25 @@ function signal(rssi) {
   return rssi >= -60 ? 'excellent' : rssi >= -67 ? 'good' : rssi >= -75 ? 'fair' : 'weak';
 }
 
+function renderDevices(nat) {
+  if (!nat.enabled) { setText('s-nat', 'Not bridged'); return; }
+  if (!nat.active) { setText('s-nat', 'Enabled: needs the PLC IP and a restart', 'warn'); return; }
+  if (!nat.devices.length) { setText('s-nat', 'None seen yet', 'warn'); return; }
+  const el = $('s-nat');
+  el.textContent = '';
+  for (const d of nat.devices) {
+    const row = document.createElement('div');
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + (d.idle_s >= 0 && d.idle_s < 300 ? 'ok' : 'warn');
+    row.appendChild(dot);
+    const seen = d.idle_s < 0 ? 'not seen since restart' :
+                 d.idle_s < 60 ? 'active' : 'last frame ' + duration(d.idle_s) + ' ago';
+    row.appendChild(document.createTextNode(d.ip + ' · ' + d.mac + ' · to Wi-Fi ' + d.to_wifi.toLocaleString() +
+      ', from Wi-Fi ' + d.to_eth.toLocaleString() + ' · ' + seen));
+    el.appendChild(row);
+  }
+}
+
 async function refresh() {
   try {
     const r = await fetch('/api/status', { cache: 'no-store' });
@@ -153,10 +176,13 @@ async function refresh() {
     } else {
       setText('s-plc', 'Not found yet' + (s.plc.ip ? ' (looking for ' + s.plc.ip + ')' : ''), 'warn');
     }
+    renderDevices(s.nat);
     const c = s.counters;
     const fails = c.eth2wifi_queue_full + c.eth2wifi_tx_fail + c.wifi2eth_tx_fail;
     setText('s-traffic', 'PLC → Wi-Fi ' + c.eth2wifi.toLocaleString() + ' · Wi-Fi → PLC ' + c.wifi2eth.toLocaleString() +
-            ' frames · ' + fails + ' dropped', fails ? 'warn' : 'ok');
+            ' frames · ' + fails + ' dropped' +
+            (c.pnio_devices ? ' · PROFINET IO to ' + c.pnio_devices + ' device(s) on Wi-Fi: ' + c.pnio.toLocaleString() : ''),
+            fails ? 'warn' : 'ok');
     setText('s-reconnects', String(c.reconnects));
     setText('s-uptime', duration(s.uptime_s));
     setText('s-reset', s.reset_reason);
@@ -173,6 +199,7 @@ async function loadConfig() {
     $('open').checked = c.open;
     $('password').disabled = c.open;
     $('plc_ip').value = c.plc_ip;
+    $('nat').checked = c.nat;
     $('setup-ssid').textContent = '"' + c.setup_ssid + '"';
   } catch (e) { /* refresh() shows the offline banner */ }
 }

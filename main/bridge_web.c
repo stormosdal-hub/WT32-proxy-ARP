@@ -167,7 +167,7 @@ static esp_err_t status_get(httpd_req_t *req)
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
 
-    char json[1024];
+    char json[2048];
     strbuf_t sb = { json, sizeof(json), 0 };
     sb_printf(&sb, "{\"uptime_s\":%" PRId64 ",\"reset_reason\":\"%s\",\"free_heap\":%" PRIu32 ",\"min_free_heap\":%" PRIu32,
               esp_timer_get_time() / 1000000, reset_reason_name(esp_reset_reason()),
@@ -195,11 +195,20 @@ static esp_err_t status_get(httpd_req_t *req)
     }
     sb_printf(&sb, "},\"counters\":{\"eth2wifi\":%" PRIu32 ",\"eth2wifi_queue_full\":%" PRIu32
               ",\"eth2wifi_tx_fail\":%" PRIu32 ",\"wifi2eth\":%" PRIu32 ",\"wifi2eth_tx_fail\":%" PRIu32
-              ",\"reconnects\":%" PRIu32 "}",
+              ",\"reconnects\":%" PRIu32 ",\"pnio\":%" PRIu32 ",\"pnio_devices\":%d}",
               st.eth2wifi_fwd, st.eth2wifi_queue_full, st.eth2wifi_tx_fail,
-              st.wifi2eth_fwd, st.wifi2eth_tx_fail, st.reconnects);
-    sb_printf(&sb, ",\"setup_ap\":{\"active\":%s,\"clients\":%d}}", st.setup_ap_active ? "true" : "false",
+              st.wifi2eth_fwd, st.wifi2eth_tx_fail, st.reconnects, st.eth2wifi_pnio, st.pnio_devices);
+    sb_printf(&sb, ",\"setup_ap\":{\"active\":%s,\"clients\":%d}", st.setup_ap_active ? "true" : "false",
               st.setup_ap_clients);
+    sb_printf(&sb, ",\"nat\":{\"enabled\":%s,\"active\":%s,\"devices\":[", cfg.nat_enabled ? "true" : "false",
+              st.nat_active ? "true" : "false");
+    for (int i = 0; i < st.nat_count; i++) {
+        const nat_device_t *d = &st.nat_devices[i];
+        sb_printf(&sb, "%s{\"ip\":\"" IPV4_FMT "\",\"mac\":\"" MACSTR "\",\"to_wifi\":%" PRIu32
+                  ",\"to_eth\":%" PRIu32 ",\"idle_s\":%" PRId32 "}",
+                  i ? "," : "", IPV4_ARGS(d->ip), MAC2STR(d->mac), d->to_wifi, d->to_eth, d->idle_s);
+    }
+    sb_printf(&sb, "]}}");
     if (sb.len >= sb.size) {
         return send_json(req, "500 Internal Server Error", "{\"ok\":false,\"error\":\"status too large\"}");
     }
@@ -222,7 +231,7 @@ static esp_err_t config_get(httpd_req_t *req)
     }
     sb_printf(&sb, ",\"setup_ssid\":");
     sb_json_str(&sb, CONFIG_BRIDGE_SETUP_AP_SSID);
-    sb_printf(&sb, "}");
+    sb_printf(&sb, ",\"nat\":%s}", cfg.nat_enabled ? "true" : "false");
     return send_json(req, "200 OK", json);
 }
 
@@ -300,6 +309,14 @@ static esp_err_t config_post(httpd_req_t *req)
             return send_result(req, problem);
         }
         strlcpy(cfg.setup_password, value, sizeof(cfg.setup_password));
+    }
+
+    // Bridge other devices: a checkbox, so it's only sent when ticked
+    char nat[4] = "";
+    form_field(body, "nat", nat, sizeof(nat));
+    cfg.nat_enabled = strcmp(nat, "1") == 0;
+    if (cfg.nat_enabled && cfg.plc_ip == 0) {
+        return send_result(req, "Bridging other devices needs the PLC IP, to tell the PLC apart from them");
     }
 
     esp_err_t err = bridge_config_save(&cfg);

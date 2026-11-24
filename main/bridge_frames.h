@@ -47,6 +47,10 @@ uint16_t frame_ethertype(const uint8_t *frame, uint32_t len, uint32_t *payload_o
 // frames share the EtherType but must not be bridged.
 bool frame_is_profinet_dcp(const uint8_t *frame, uint32_t len);
 
+// Removes an 802.1Q priority tag (VLAN ID 0) in place, keeping the buffer's start; returns the
+// new length. Frames without one are left alone. Wi-Fi carries the priority itself.
+uint32_t frame_strip_priority_tag(uint8_t *frame, uint32_t len);
+
 // Sender IPv4 address of an untagged ARP (SPA) or IPv4 (source address) frame.
 // Returns false for anything else.
 bool frame_sender_ip(const uint8_t *frame, uint32_t len, uint32_t *ip);

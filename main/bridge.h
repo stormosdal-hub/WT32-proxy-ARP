@@ -6,6 +6,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "bridge_nat.h"
 
 typedef struct {
     // Links
@@ -26,9 +27,16 @@ typedef struct {
     uint32_t wifi2eth_fwd;
     uint32_t wifi2eth_tx_fail;
     uint32_t reconnects;
+    // PROFINET IO devices on Wi-Fi (bridge_pnio.h)
+    uint32_t eth2wifi_pnio;     // PLC's cyclic/alarm frames sent to them
+    int pnio_devices;
     // Setup access point
     bool setup_ap_active;
     int setup_ap_clients;
+    // Other devices on the switch (bridge_nat.h)
+    bool nat_active;            // enabled in the settings and the PLC IP is set
+    int nat_count;
+    nat_device_t nat_devices[NAT_MAX_DEVICES];
 } bridge_status_t;
 
 void bridge_get_status(bridge_status_t *status);

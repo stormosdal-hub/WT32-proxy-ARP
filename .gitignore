@@ -1,4 +1,7 @@
 build/
 managed_components/
+# Generated from sdkconfig.defaults + sdkconfig.secrets, so they contain the passwords too
 sdkconfig
 sdkconfig.old
+# Passwords (copy sdkconfig.secrets.example)
+sdkconfig.secrets
